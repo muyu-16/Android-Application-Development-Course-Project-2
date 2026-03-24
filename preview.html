@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+	<title>移动应用开发 - 结课作业展示</title>
+	<style>
+		/* 基础变量 */
+		:root {
+			--primary-color: #667eea;
+			--secondary-color: #764ba2;
+			--accent-color: #f093fb;
+			--text-light: #ffffff;
+			--text-muted: rgba(255, 255, 255, 0.7);
+		}
+
+		* {
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+		}
+
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+		}
+
+		.container {
+			min-height: 100vh;
+			background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+			position: relative;
+			overflow: hidden;
+			padding: 120px 40px 60px;
+		}
+
+		/* 背景动画 */
+		.bg-animation {
+			position: absolute;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			overflow: hidden;
+			z-index: 0;
+		}
+
+		.gradient-orb {
+			position: absolute;
+			border-radius: 50%;
+			filter: blur(80px);
+			opacity: 0.6;
+			animation: float 8s ease-in-out infinite;
+		}
+
+		.orb-1 {
+			width: 400px;
+			height: 400px;
+			background: var(--primary-color);
+			top: -100px;
+			right: -100px;
+			animation-delay: 0s;
+		}
+
+		.orb-2 {
+			width: 300px;
+			height: 300px;
+			background: var(--secondary-color);
+			bottom: 20%;
+			left: -80px;
+			animation-delay: -3s;
+		}
+
+		.orb-3 {
+			width: 250px;
+			height: 250px;
+			background: var(--accent-color);
+			bottom: -50px;
+			right: 20%;
+			animation-delay: -5s;
+		}
+
+		@keyframes float {
+			0%, 100% {
+				transform: translate(0, 0) scale(1);
+			}
+			33% {
+				transform: translate(30px, -30px) scale(1.05);
+			}
+			66% {
+				transform: translate(-20px, 20px) scale(0.95);
+			}
+		}
+
+		/* 头部区域 */
+		.header {
+			position: relative;
+			z-index: 1;
+			text-align: center;
+			margin-bottom: 80px;
+			opacity: 0;
+			transform: translateY(-30px);
+			transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+		}
+
+		.header.fade-in {
+			opacity: 1;
+			transform: translateY(0);
+		}
+
+		.project-badge {
+			display: inline-block;
+			padding: 12px 32px;
+			background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+			border-radius: 40px;
+			font-size: 24px;
+			color: var(--text-light);
+			font-weight: 500;
+			letter-spacing: 2px;
+			margin-bottom: 24px;
+			box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4);
+		}
+
+		.project-title {
+			font-size: 56px;
+			font-weight: 700;
+			color: var(--text-light);
+			margin-bottom: 16px;
+			text-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+
+		.project-subtitle {
+			font-size: 32px;
+			color: var(--text-muted);
+			font-weight: 300;
+		}
+
+		/* 团队区域 */
+		.team-section {
+			position: relative;
+			z-index: 1;
+			opacity: 0;
+			transform: translateY(50px);
+			transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+		}
+
+		.team-section.slide-up {
+			opacity: 1;
+			transform: translateY(0);
+		}
+
+		.section-title {
+			font-size: 36px;
+			color: var(--text-light);
+			text-align: center;
+			margin-bottom: 40px;
+			font-weight: 600;
+			position: relative;
+		}
+
+		.section-title::after {
+			content: '';
+			position: absolute;
+			bottom: -16px;
+			left: 50%;
+			transform: translateX(-50%);
+			width: 80px;
+			height: 6px;
+			background: linear-gradient(90deg, var(--primary-color), var(--accent-color));
+			border-radius: 3px;
+		}
+
+		.member-cards {
+			display: flex;
+			flex-direction: column;
+			gap: 24px;
+			max-width: 600px;
+			margin: 0 auto;
+		}
+
+		.member-card {
+			display: flex;
+			align-items: center;
+			padding: 32px;
+			background: rgba(255, 255, 255, 0.08);
+			backdrop-filter: blur(20px);
+			border-radius: 24px;
+			border: 1px solid rgba(255, 255, 255, 0.1);
+			opacity: 0;
+			transform: translateX(-30px);
+			transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+			cursor: pointer;
+		}
+
+		.member-card.card-appear {
+			opacity: 1;
+			transform: translateX(0);
+		}
+
+		.member-card:active {
+			transform: scale(0.98);
+			background: rgba(255, 255, 255, 0.12);
+		}
+
+		.avatar {
+			width: 96px;
+			height: 96px;
+			border-radius: 50%;
+			background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			margin-right: 24px;
+			box-shadow: 0 8px 24px rgba(102, 126, 234, 0.4);
+			flex-shrink: 0;
+		}
+
+		.avatar-text {
+			font-size: 40px;
+			font-weight: 700;
+			color: var(--text-light);
+		}
+
+		.member-info {
+			flex: 1;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.member-name {
+			font-size: 34px;
+			font-weight: 600;
+			color: var(--text-light);
+			margin-bottom: 8px;
+		}
+
+		.member-id {
+			font-size: 26px;
+			color: var(--text-muted);
+			font-family: 'Courier New', monospace;
+			letter-spacing: 2px;
+		}
+
+		.role-tag {
+			padding: 8px 20px;
+			background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+			border-radius: 20px;
+			font-size: 22px;
+			color: var(--text-light);
+			font-weight: 500;
+			white-space: nowrap;
+		}
+
+		/* 底部装饰 */
+		.footer {
+			position: relative;
+			z-index: 1;
+			text-align: center;
+			margin-top: 80px;
+			opacity: 0;
+			transition: opacity 0.8s ease 0.5s;
+		}
+
+		.footer.fade-in {
+			opacity: 1;
+		}
+
+		.decorative-line {
+			width: 120px;
+			height: 4px;
+			background: linear-gradient(90deg, transparent, var(--primary-color), transparent);
+			margin: 0 auto 24px;
+		}
+
+		.footer-text {
+			font-size: 24px;
+			color: var(--text-muted);
+		}
+
+		/* Toast 提示 */
+		.toast {
+			position: fixed;
+			top: 50%;
+			left: 50%;
+			transform: translate(-50%, -50%);
+			background: rgba(0, 0, 0, 0.8);
+			color: white;
+			padding: 20px 40px;
+			border-radius: 12px;
+			font-size: 28px;
+			z-index: 1000;
+			display: none;
+			animation: fadeIn 0.3s ease;
+		}
+
+		.toast.show {
+			display: block;
+		}
+
+		@keyframes fadeIn {
+			from { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+			to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+		}
+
+		/* 移动端适配 */
+		@media (max-width: 768px) {
+			.container {
+				padding: 80px 24px 40px;
+			}
+			.project-title {
+				font-size: 40px;
+			}
+			.project-subtitle {
+				font-size: 24px;
+			}
+			.member-card {
+				padding: 24px;
+			}
+			.avatar {
+				width: 64px;
+				height: 64px;
+			}
+			.avatar-text {
+				font-size: 28px;
+			}
+			.member-name {
+				font-size: 28px;
+			}
+			.member-id {
+				font-size: 20px;
+			}
+			.role-tag {
+				font-size: 18px;
+				padding: 6px 14px;
+			}
+		}
+	</style>
+</head>
+<body>
+	<view class="container">
+		<!-- 背景动画 -->
+		<div class="bg-animation">
+			<div class="gradient-orb orb-1"></div>
+			<div class="gradient-orb orb-2"></div>
+			<div class="gradient-orb orb-3"></div>
+		</div>
+
+		<!-- 顶部标题区域 -->
+		<div class="header" id="header">
+			<div class="project-badge">24软件中美</div>
+			<div class="project-title">移动应用开发</div>
+			<div class="project-subtitle">结课作业展示</div>
+		</div>
+
+		<!-- 团队成员区域 -->
+		<div class="team-section" id="teamSection">
+			<div class="section-title">小组成员</div>
+			<div class="member-cards" id="memberCards">
+				<!-- 成员卡片将由 JavaScript 动态生成 -->
+			</div>
+		</div>
+
+		<!-- 底部装饰 -->
+		<div class="footer" id="footer">
+			<div class="decorative-line"></div>
+			<div class="footer-text">Powered by UniApp</div>
+		</div>
+	</div>
+
+	<!-- Toast 提示 -->
+	<div class="toast" id="toast"></div>
+
+	<script>
+		// 模拟 Vue 数据
+		const members = [
+			{ name: '刘子云', id: '240200181', role: '组长' },
+			{ name: '成员一', id: '240200XXX', role: '组员' },
+			{ name: '成员二', id: '240200XXX', role: '组员' }
+		];
+
+		// 动态生成成员卡片
+		function renderMembers() {
+			const container = document.getElementById('memberCards');
+			members.forEach((member, index) => {
+				const card = document.createElement('div');
+				card.className = 'member-card';
+				card.style.animationDelay = (index * 0.15 + 0.3) + 's';
+				card.innerHTML = `
+					<div class="avatar">
+						<span class="avatar-text">${member.name[0]}</span>
+					</div>
+					<div class="member-info">
+						<div class="member-name">${member.name}</div>
+						<div class="member-id">${member.id}</div>
+					</div>
+					<div class="role-tag">${member.role}</div>
+				`;
+				card.onclick = () => cardTap(index);
+				container.appendChild(card);
+			});
+		}
+
+		// 模拟 uni.showToast
+		function cardTap(index) {
+			const toast = document.getElementById('toast');
+			toast.textContent = members[index].name;
+			toast.classList.add('show');
+			setTimeout(() => {
+				toast.classList.remove('show');
+			}, 2000);
+		}
+
+		// 页面加载后触发动画
+		window.onload = function() {
+			renderMembers();
+			
+			setTimeout(() => {
+				document.getElementById('header').classList.add('fade-in');
+				document.getElementById('teamSection').classList.add('slide-up');
+				document.getElementById('footer').classList.add('fade-in');
+				
+				// 成员卡片依次出现
+				const cards = document.querySelectorAll('.member-card');
+				cards.forEach((card, index) => {
+					setTimeout(() => {
+						card.classList.add('card-appear');
+					}, index * 150 + 300);
+				});
+			}, 100);
+		};
+	</script>
+</body>
+</html>
