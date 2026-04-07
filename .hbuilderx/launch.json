@@ -3,6 +3,7 @@
     "configurations" : [
         {
             "customPlaygroundType" : "local",
+            "packageName" : "com.reddit.frontpage",
             "playground" : "custom",
             "type" : "uni-app:app-android"
         }
