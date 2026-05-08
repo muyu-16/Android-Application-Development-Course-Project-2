@@ -71,41 +71,12 @@
 						block-size="18"
 					/>
 				</view>
-				<!-- 变速不变调按钮 - 实验五 -->
-				<view class="speed-control-section">
-					<text class="speed-section-title">变速不变调 (实验五)</text>
-					<view class="speed-buttons">
-						<view 
-							class="speed-btn" 
-							:class="{ active: currentSpeed === 0.5 }"
-							@tap="setSpeed(0.5)"
-						>
-							<text class="speed-btn-text">0.5x</text>
-						</view>
-						<view 
-							class="speed-btn" 
-							:class="{ active: currentSpeed === 1 }"
-							@tap="setSpeed(1)"
-						>
-							<text class="speed-btn-text">1x</text>
-						</view>
-						<view 
-							class="speed-btn" 
-							:class="{ active: currentSpeed === 2 }"
-							@tap="setSpeed(2)"
-						>
-							<text class="speed-btn-text">2x</text>
-						</view>
-					</view>
-					<text class="speed-hint">试听"移动应用开发真奇妙啊"中的长音效果</text>
-				</view>
 			</view>
 		</view>
 
 		<!-- 录音列表 -->
 		<view class="record-list-section">
 			<text class="section-title">录音历史 ({{ recordList.length }})</text>
-			<text class="section-hint">录制"移动应用开发真奇妙啊——传感器让代码活起来啦——"测试变速效果</text>
 			<scroll-view scroll-y class="list-container">
 				<view 
 					v-for="(item, index) in recordList" 
@@ -116,7 +87,6 @@
 				>
 					<view class="record-info">
 						<text class="record-name">{{ item.fullTime || item.time }}</text>
-						<text class="record-time-display">{{ formatTime(item.duration || 0) }}</text>
 					</view>
 					<view class="record-actions">
 						<text v-if="currentPlayingIndex === index" class="playing-indicator">
@@ -137,7 +107,6 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { timeStretch } from '../../utils/time-stretch.js'
 
 const recorder = uni.getRecorderManager()
 const audio = uni.createInnerAudioContext()
@@ -151,9 +120,6 @@ let recordTimer = null
 const recordList = ref([])
 const playbackRate = ref(1.0)
 const volume = ref(0.8)
-const currentSpeed = ref(1)
-const currentPlayingSrc = ref('')
-const isProcessing = ref(false)
 
 const userName = '刘子云'
 
@@ -183,8 +149,7 @@ onMounted(() => {
 			id: Date.now(),
 			src: res.tempFilePath,
 			time: timeStr,
-			fullTime: fullStr,
-			duration: recordDuration.value
+			fullTime: fullStr
 		})
 		
 		console.log(`【${userName}】录音添加后 - recordList长度: ${recordList.value.length}`)
@@ -232,17 +197,12 @@ onUnmounted(() => {
 
 const startRecord = () => {
 	if (isRecording.value) return
-	console.log('recordManager.start 请求参数:', {
-		format: 'wav',
-		sampleRate: 16000,
-		numberOfChannels: 1,
-		duration: 30000
-	})
 	recorder.start({
-		format: 'wav',
+		format: 'mp3',
 		sampleRate: 16000,
 		numberOfChannels: 1,
-		duration: 30000
+		encodeBitRate: 48000,
+		duration: 300000
 	})
 }
 
@@ -298,73 +258,6 @@ const onVolumeChange = (e) => {
 	volume.value = e.detail.value
 	if (isPlaying.value) {
 		audio.volume = volume.value
-	}
-}
-
-const setSpeed = async (speed) => {
-	if (isProcessing.value) return
-	
-	const index = currentPlayingIndex.value
-	if (index === -1) {
-		uni.showToast({ title: '请先选择录音', icon: 'none' })
-		return
-	}
-	
-	currentSpeed.value = speed
-	playbackRate.value = speed
-	
-	// 如果当前没有播放，先加载音源
-	if (currentPlayingIndex.value !== index) {
-		audio.src = recordList.value[index].src
-	}
-	
-	// 设置播放速度
-	audio.playbackRate = speed
-	audio.volume = volume.value
-	
-	// 如果之前在播放，继续播放
-	if (isPlaying.value) {
-		audio.play()
-	} else {
-		audio.play()
-		isPlaying.value = true
-	}
-	
-	// 显示提示
-	if (speed === 1) {
-		uni.showToast({ title: '正常播放速度', icon: 'none', duration: 1000 })
-	} else {
-		uni.showToast({ title: `播放速度 ${speed}x`, icon: 'none', duration: 1500 })
-		
-		// 0.5x 和 2x 尝试变速不变调处理（实验五）
-		if (Math.abs(speed - 0.5) < 0.01 || Math.abs(speed - 2) < 0.01) {
-			// 注意：这里只是尝试，实际效果取决于录音格式和设备支持
-			console.log(`实验五：测试${speed}x变速效果 - 注意听"啊"和"啦"长音是否颤抖`)
-			
-			// 如果需要真正的变速不变调处理，可以取消下面注释并使用timeStretch工具
-			/*
-			try {
-				isProcessing.value = true
-				uni.showLoading({ title: `${speed}x 变速处理...`, mask: true })
-				const processedPath = await timeStretch(recordList.value[index].src, speed)
-				audio.src = processedPath
-				audio.playbackRate = 1
-				audio.volume = volume.value
-				audio.play()
-				currentPlayingSrc.value = processedPath
-				uni.showToast({ title: `${speed}x 变速不变调`, icon: 'none', duration: 1500 })
-			} catch (err) {
-				console.error('变速处理失败，使用普通变速:', err)
-				audio.src = recordList.value[index].src
-				audio.playbackRate = speed
-				audio.volume = volume.value
-				audio.play()
-			} finally {
-				isProcessing.value = false
-				uni.hideLoading()
-			}
-			*/
-		}
 	}
 }
 
@@ -533,68 +426,6 @@ const goBack = () => {
 	margin: 0;
 }
 
-.speed-control-section {
-	margin-top: 20rpx;
-}
-
-.speed-section-title {
-	display: block;
-	text-align: center;
-	font-size: 28rpx;
-	font-weight: 600;
-	color: rgba(255, 255, 255, 0.9);
-	margin-bottom: 20rpx;
-	padding: 10rpx 0;
-	background: rgba(102, 126, 234, 0.15);
-	border-radius: 20rpx;
-}
-
-.speed-buttons {
-	display: flex;
-	justify-content: center;
-	gap: 30rpx;
-	margin-bottom: 16rpx;
-}
-
-.speed-btn {
-	padding: 16rpx 40rpx;
-	border-radius: 30rpx;
-	background: rgba(255, 255, 255, 0.1);
-	border: 2rpx solid rgba(255, 255, 255, 0.2);
-	transition: all 0.3s ease;
-	transform: scale(1);
-	box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
-}
-
-.speed-btn:active {
-	transform: scale(0.95);
-}
-
-.speed-btn.active {
-	background: linear-gradient(135deg, #667eea, #764ba2);
-	border-color: #667eea;
-	box-shadow: 0 6rpx 16rpx rgba(102, 126, 234, 0.4);
-	transform: scale(1.05);
-}
-
-.speed-btn-text {
-	font-size: 28rpx;
-	color: rgba(255, 255, 255, 0.8);
-	font-weight: 600;
-}
-
-.speed-btn.active .speed-btn-text {
-	color: #fff;
-}
-
-.speed-hint {
-	display: block;
-	text-align: center;
-	font-size: 24rpx;
-	color: rgba(255, 255, 255, 0.5);
-	font-style: italic;
-}
-
 .record-list-section {
 	background: rgba(255, 255, 255, 0.08);
 	border-radius: 32rpx;
@@ -608,18 +439,7 @@ const goBack = () => {
 	font-size: 32rpx;
 	color: #fff;
 	font-weight: 600;
-	margin-bottom: 16rpx;
-}
-
-.section-hint {
-	display: block;
-	font-size: 24rpx;
-	color: rgba(255, 255, 255, 0.5);
 	margin-bottom: 24rpx;
-	padding: 10rpx 16rpx;
-	background: rgba(255, 255, 255, 0.05);
-	border-radius: 16rpx;
-	text-align: center;
 }
 
 .list-container {
