@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<plugin>
+    <name>AudioAnalyzer</name>
+    <description>Android音频频谱分析原生模块</description>
+    <platforms>
+        <platform name="Android">
+            <sdk-dependency src="android-platform" minRev="21"/>
+        </platform>
+    </platforms>
+</plugin>

@@ -62,17 +62,14 @@ function parseWAV(buffer) {
   const headerHex = headerBytes.map(b => b.toString(16).padStart(2, '0')).join(' ')
   const headerAscii = headerBytes.map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '.').join('')
   console.log(`  文件头: [${headerHex}] "${headerAscii}" (${buffer.byteLength} bytes)`)
-  
+
   if (riff !== 'RIFF') {
-    if (headerBytes[0] === 0x23 && headerBytes[1] === 0x21 && headerBytes[2] === 0x41 && headerBytes[3] === 0x4D) {
-      console.log(`  检测到 AMR-WB 格式，需要先转换为 WAV`)
-      throw new Error(`检测到 AMR-WB 格式，请在 App 端使用 uni.getRecorderManager() 支持的格式，或使用 native.js 录音插件`)
-    }
     // 常见格式识别
     let hint = '未知格式'
     if (headerAscii.startsWith('ftyp') || headerBytes[4] === 0x66) hint = '这是 M4A/AAC 文件，设备不支持 WAV 录音'
     if (headerBytes[0] === 0xFF && (headerBytes[1] & 0xE0) === 0xE0) hint = '这是 MP3 文件'
     if (headerBytes[0] === 0x00 && headerBytes[1] === 0x00) hint = '可能是 M4A/AAC (ftyp box)'
+    if (headerAscii.startsWith('#!AMR')) hint = '这是 AMR 格式文件，设备不支持 WAV 录音'
     throw new Error(`不是 WAV 文件。头部="${headerAscii}"，${hint}`)
   }
   const numChannels = view.getUint16(22, true)
@@ -82,7 +79,7 @@ function parseWAV(buffer) {
   let dataOffset = 44
   for (let i = 36; i < buffer.byteLength - 8; i++) {
     if (view.getUint8(i) === 0x64 && view.getUint8(i + 1) === 0x61 &&
-        view.getUint8(i + 2) === 0x74 && view.getUint8(i + 3) === 0x61) {
+      view.getUint8(i + 2) === 0x74 && view.getUint8(i + 3) === 0x61) {
       dataOffset = i + 8
       break
     }
@@ -193,8 +190,89 @@ function olaTimeStretch(input, sampleRate, speed) {
  *   const outputBuffer = timeStretchBuffer(inputBuffer, 1.5)
  *   // 你自己把 outputBuffer 写入文件
  */
-export function timeStretchBuffer(wavBuffer, speed) {
-  const { samples, sampleRate } = parseWAV(wavBuffer)
+// 检查文件格式是否为 WAV
+function isWAVFormat(buffer) {
+  const view = new DataView(buffer)
+  const headerBytes = []
+  for (let i = 0; i < Math.min(12, buffer.byteLength); i++) {
+    headerBytes.push(view.getUint8(i))
+  }
+  const riff = String.fromCharCode(headerBytes[0], headerBytes[1], headerBytes[2], headerBytes[3])
+  return riff === 'RIFF'
+}
+
+// 使用 Web Audio API 解码任意音频格式为 PCM
+async function decodeAudioToPCM(buffer) {
+  return new Promise((resolve, reject) => {
+    try {
+      // #ifdef H5
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext
+      if (!AudioContextClass) {
+        reject(new Error('Web Audio API 不可用'))
+        return
+      }
+      const audioContext = new AudioContextClass()
+      audioContext.decodeAudioData(buffer.slice(0), (audioBuffer) => {
+        const samples = audioBuffer.getChannelData(0)
+        const sampleRate = audioBuffer.sampleRate
+        audioContext.close()
+        resolve({ samples: new Float32Array(samples), sampleRate })
+      }, (err) => {
+        audioContext.close()
+        reject(new Error(`音频解码失败: ${err}`))
+      })
+      // #endif
+      // #ifdef MP-WEIXIN
+      reject(new Error('小程序环境不支持音频格式转换，请使用 WAV 格式录音'))
+      // #endif
+    } catch (e) {
+      reject(new Error(`音频解码失败: ${e.message}`))
+    }
+  })
+}
+
+// App 环境下的音频解码（使用 plus.audio）
+async function decodeAudioForApp(filePath) {
+  return new Promise((resolve, reject) => {
+    // #ifdef APP-PLUS
+    // App 端：尝试使用 native 方法解码
+    // 如果无法解码，返回 null 表示不支持
+    console.log('  App 环境尝试解码音频...')
+    reject(new Error('App 环境不支持音频格式转换'))
+    // #endif
+    // #ifndef APP-PLUS
+    // 非 App 环境不应该调用此函数
+    reject(new Error('仅 App 环境使用此方法'))
+    // #endif
+  })
+}
+
+/**
+ * 【纯算法】变速不变调 — ArrayBuffer 进，ArrayBuffer 出（支持 WAV/AAC/AMR 等多种格式）
+ * 注意：App 环境下仅支持 WAV 格式，其他格式会抛出错误
+ */
+export async function timeStretchBuffer(audioBuffer, speed) {
+  let samples, sampleRate
+
+  if (isWAVFormat(audioBuffer)) {
+    const parsed = parseWAV(audioBuffer)
+    samples = parsed.samples
+    sampleRate = parsed.sampleRate
+  } else {
+    // #ifdef APP-PLUS
+    throw new Error('App 环境下仅支持 WAV 录音格式，请检查录音设置')
+    // #endif
+    // #ifdef H5
+    console.log('  非 WAV 格式，使用 Web Audio API 解码...')
+    const decoded = await decodeAudioToPCM(audioBuffer)
+    samples = decoded.samples
+    sampleRate = decoded.sampleRate
+    // #endif
+    // #ifdef MP-WEIXIN
+    throw new Error('小程序环境不支持音频格式转换，请使用 WAV 格式录音')
+    // #endif
+  }
+
   const stretched = olaTimeStretch(samples, sampleRate, speed)
   return encodeWAV(stretched, sampleRate)
 }
@@ -211,7 +289,7 @@ function readFileAsArrayBuffer(filePath) {
   // 关键：用 convertLocalFileSystemURL 转换 _doc/ 逻辑路径
   return new Promise((resolve, reject) => {
     let resolved = false
-    
+
     // 10秒超时保护（防止 FileReader 永久挂起）
     const timer = setTimeout(() => {
       if (!resolved) {
@@ -219,14 +297,14 @@ function readFileAsArrayBuffer(filePath) {
         reject(new Error(`读取文件超时(10s): ${filePath}`))
       }
     }, 10000)
-    
+
     // _doc/xxx 转为 file:///... 绝对路径
     let absPath = filePath
     if (plus.io.convertLocalFileSystemURL) {
       absPath = plus.io.convertLocalFileSystemURL(filePath)
       console.log(`  路径转换: ${filePath} → ${absPath}`)
     }
-    
+
     plus.io.resolveLocalFileSystemURL(absPath, (entry) => {
       entry.file((file) => {
         const reader = new plus.io.FileReader()
@@ -234,12 +312,12 @@ function readFileAsArrayBuffer(filePath) {
           if (resolved) return
           resolved = true
           clearTimeout(timer)
-          
+
           if (!e.target.result) {
             reject(new Error('读取文件内容为空'))
             return
           }
-          
+
           // readAsDataURL 返回 "data:audio/wav;base64,xxxxx"
           // 需要提取 base64 部分并转为 ArrayBuffer
           const dataURL = e.target.result
@@ -358,83 +436,19 @@ function getTempPath(speed) {
  *   audio.src = path
  *   audio.play()
  */
-/**
- * 检测音频文件格式
- */
-function detectAudioFormat(headerBytes) {
-  // 检查 WAV (RIFF)
-  if (headerBytes[0] === 0x52 && headerBytes[1] === 0x49 && 
-      headerBytes[2] === 0x46 && headerBytes[3] === 0x46) {
-    return 'wav';
-  }
-  
-  // 检查 MP3 (ID3v1/ID3v2 或 MPEG header)
-  if ((headerBytes[0] === 0xFF && (headerBytes[1] & 0xE0) === 0xE0) ||
-      (headerBytes[0] === 0x49 && headerBytes[1] === 0x44 && headerBytes[2] === 0x33)) {
-    return 'mp3';
-  }
-  
-  // 检查 AMR-WB
-  if (headerBytes[0] === 0x23 && headerBytes[1] === 0x21 && 
-      headerBytes[2] === 0x41 && headerBytes[3] === 0x4D) {
-    return 'amr-wb';
-  }
-  
-  // 检查 AAC/M4A (ftyp box)
-  if (headerBytes[4] === 0x66 && headerBytes[5] === 0x74 && 
-      headerBytes[6] === 0x79 && headerBytes[7] === 0x70) {
-    return 'aac';
-  }
-  
-  return 'unknown';
-}
-
 export async function timeStretch(filePath, speed) {
   console.log(`[time-stretch] 开始 ${speed}x 处理...`)
   const t0 = Date.now()
-  
-  try {
-    // 读文件 → 纯算法处理 → 写文件
-    const inputBuffer = await readFileAsArrayBuffer(filePath)
-    console.log(`  读取完成: ${(inputBuffer.byteLength / 1024).toFixed(1)} KB`)
-    
-    // 检查文件格式
-    const view = new DataView(inputBuffer)
-    const headerBytes = []
-    for (let i = 0; i < Math.min(12, inputBuffer.byteLength); i++) {
-      headerBytes.push(view.getUint8(i))
-    }
-    
-    const format = detectAudioFormat(headerBytes)
-    console.log(`  检测到格式: ${format}`)
-    
-    // 如果不是 WAV 格式，无法进行变速处理
-    if (format !== 'wav') {
-      console.error(`  ${format.toUpperCase()} 格式暂不支持变速处理`)
-      uni.showToast({
-        title: `${format.toUpperCase()} 格式无法变速`,
-        icon: 'none'
-      })
-      return filePath // 返回原路径，让用户可以正常播放
-    }
-    
-    const t1 = Date.now()
-    const outputBuffer = timeStretchBuffer(inputBuffer, speed)
-    const t2 = Date.now()
-    console.log(`  OLA 处理: ${t2 - t1}ms`)
-    
-    const outputPath = getTempPath(speed)
-    await writeFileFromBuffer(outputPath, outputBuffer)
-    console.log(`[time-stretch] ${speed}x 完成! 总耗时: ${Date.now() - t0}ms`)
-    return outputPath
-  } catch (error) {
-    console.error('变速处理出错:', error)
-    uni.showToast({
-      title: '变速处理失败',
-      icon: 'none'
-    })
-    return filePath // 返回原路径
-  }
+  const inputBuffer = await readFileAsArrayBuffer(filePath)
+  console.log(`  读取完成: ${(inputBuffer.byteLength / 1024).toFixed(1)} KB`)
+  const t1 = Date.now()
+  const outputBuffer = await timeStretchBuffer(inputBuffer, speed)
+  const t2 = Date.now()
+  console.log(`  OLA 处理: ${t2 - t1}ms`)
+  const outputPath = getTempPath(speed)
+  await writeFileFromBuffer(outputPath, outputBuffer)
+  console.log(`[time-stretch] ${speed}x 完成! 总耗时: ${Date.now() - t0}ms`)
+  return outputPath
 }
 /**
  * 【便捷】一次性生成 0.5x / 1.5x / 2.0x 三档
