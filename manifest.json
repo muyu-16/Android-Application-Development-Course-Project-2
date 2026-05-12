@@ -89,7 +89,12 @@
         "setting" : {
             "urlCheck" : false
         },
-        "usingComponents" : true
+        "usingComponents" : true,
+        "permission" : {
+            "scope.record" : {
+                "desc" : "用于语音录制和可视化"
+            }
+        }
     },
     "mp-alipay" : {
         "usingComponents" : true
