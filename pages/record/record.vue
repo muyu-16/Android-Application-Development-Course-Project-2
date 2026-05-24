@@ -47,6 +47,17 @@
 			<text class="wave-info">录音中... {{ formatTime(recordDuration) }}</text>
 		</view>
 
+		<!-- ASR 实时转写结果显示 -->
+		<view class="asr-panel" v-if="isRecording && asrEnabled">
+			<view class="asr-header">
+				<text class="asr-label">🎤 语音转文字</text>
+				<text class="asr-status-dot">●</text>
+			</view>
+			<scroll-view scroll-y class="asr-text-scroll">
+				<text class="asr-text">{{ asrInterimText || asrFinalText || '等待音频...' }}</text>
+			</scroll-view>
+		</view>
+
 		<!-- 控制面板 -->
 		<view class="control-panel">
 			<!-- 录音按钮 - 按下录音 -->
@@ -103,8 +114,19 @@
 					/>
 				</view>
 			</view>
-		</view>
+				<view class="control-row asr-toggle-row">
+					<view class="control-header">
+						<text class="control-label">🎤 ASR 语音转文字</text>
+						<text class="control-value">{{ asrEnabled ? '已开启' : '已关闭' }}</text>
+					</view>
+					<switch
+						:checked="asrEnabled"
+						@change="asrEnabled = $event.detail.value"
+						color="#667eea"
+					/>
+				</view>
 
+			</view>
 		<!-- 录音列表 -->
 		<view class="record-list-section">
 			<text class="section-title">录音历史 ({{ recordList.length }})</text>
@@ -114,10 +136,11 @@
 					:key="item.id"
 					class="record-item"
 					:class="{ playing: currentPlayingIndex === index }"
-					@tap="playRecord(index)"
+					
 				>
-					<view class="record-info">
+					<view class="record-info" @tap="playRecord(index)">
 						<text class="record-name">{{ item.fullTime || item.time }}</text>
+						<text v-if="item.transcript" class="record-transcript">{{ item.transcript }}</text>
 					</view>
 					<view class="record-actions">
 						<text v-if="currentPlayingIndex === index" class="playing-indicator">
@@ -174,6 +197,15 @@ let waveTickTimer = null
 const recordList = ref([])
 const playbackRate = ref(1.0)
 const volume = ref(0.8)
+
+// ASR (Automatic Speech Recognition) 配置
+const asrServerUrl = 'ws://127.0.0.1:8765/ws/transcribe'
+const asrEnabled = ref(true)
+const asrWebSocket = ref(null)
+const asrInterimText = ref('')
+const asrFinalText = ref('')
+const asrLastSentIndex = ref(0)
+const asrLanguage = ref('')
 
 const userName = '刘子云'
 const pageInstance = getCurrentInstance()?.proxy || null
@@ -241,9 +273,21 @@ const startRecord = () => {
 			type: 'mp3',
 			sampleRate: 16000,
 			bitRate: 16,
-			onProcess: (_buffers, level) => {
+			onProcess: (_buffers, level, duration) => {
 				if (!isRecording.value) return
 				targetPower.value = level
+
+				// ASR 流式发送：将 PCM Float32 转换为 Int16 发送
+				if (asrEnabled.value && asrWebSocket.value && _buffers && _buffers.length > 0) {
+					// _buffers[0] 是累积的 Float32Array PCM 数据
+					const totalSamples = _buffers[0].length
+					const lastSent = asrLastSentIndex.value
+					if (totalSamples > lastSent) {
+						const newChunk = _buffers[0].slice(lastSent, totalSamples)
+						sendPCMChunk(newChunk)
+						asrLastSentIndex.value = totalSamples
+					}
+				}
 			}
 		}
 
@@ -253,6 +297,8 @@ const startRecord = () => {
 			recordDuration.value = 0
 			startDurationTimer()
 			startWaveTicker()
+			// 连接 ASR WebSocket
+			connectASR()
 		}, (msg) => {
 			console.error('开始录音失败:', msg)
 			isRecording.value = false
@@ -295,34 +341,46 @@ const stopRecord = () => {
 		recordTimer = null
 	}
 
+	// 关闭 ASR 连接并获取最终识别文本
+	const asrPromise = closeASR()
+
 	RecordApp.Stop((arrayBuffer, duration, mime) => {
 		const now = new Date()
 		const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
 
-		// #ifdef H5
-		const blob = new Blob([arrayBuffer], { type: mime })
-		const url = (window.URL || window.webkitURL).createObjectURL(blob)
-		recordList.value.push({
-			id: Date.now(),
-			src: url,
-			time: timeStr
-		})
-		uni.setStorageSync('recordList', recordList.value)
-		// #endif
+		// 等待 ASR 结果
+		asrPromise.then((transcript) => {
+			const finalTranscript = transcript || asrFinalText.value || ''
 
-		// #ifdef APP || MP-WEIXIN
-		RecordApp.UniSaveLocalFile('recorder.mp3', arrayBuffer, (savePath) => {
+			// #ifdef H5
+			const blob = new Blob([arrayBuffer], { type: mime })
+			const url = (window.URL || window.webkitURL).createObjectURL(blob)
 			recordList.value.push({
 				id: Date.now(),
-				src: savePath,
-				time: timeStr
+				src: url,
+				time: timeStr,
+				transcript: finalTranscript,
+				transcriptLang: asrLanguage.value || '',
 			})
 			uni.setStorageSync('recordList', recordList.value)
-		}, (errMsg) => {
-			console.error('保存录音失败:', errMsg)
-			uni.showToast({ title: '保存失败', icon: 'none' })
+			// #endif
+
+			// #ifdef APP || MP-WEIXIN
+			RecordApp.UniSaveLocalFile('recorder.mp3', arrayBuffer, (savePath) => {
+				recordList.value.push({
+					id: Date.now(),
+					src: savePath,
+					time: timeStr,
+					transcript: finalTranscript,
+					transcriptLang: asrLanguage.value || '',
+				})
+				uni.setStorageSync('recordList', recordList.value)
+			}, (errMsg) => {
+				console.error('保存录音失败:', errMsg)
+				uni.showToast({ title: '保存失败', icon: 'none' })
+			})
+			// #endif
 		})
-		// #endif
 	}, (msg) => {
 		console.error('结束录音失败:', msg)
 		uni.showToast({ title: '结束录音失败', icon: 'none' })
@@ -366,6 +424,88 @@ const stopWaveTicker = () => {
 		clearInterval(waveTickTimer)
 		waveTickTimer = null
 	}
+}
+
+// ===================== ASR WebSocket 流式识别 =====================
+
+const connectASR = () => {
+	if (!asrEnabled.value) return
+	try {
+		// #ifdef H5
+		const ws = new WebSocket(asrServerUrl)
+		ws.binaryType = 'arraybuffer'
+		ws.onopen = () => { console.log('[ASR] WebSocket 已连接') }
+		ws.onmessage = (event) => {
+			try {
+				const msg = JSON.parse(event.data)
+				if (msg.type === 'interim') {
+					asrInterimText.value = msg.text
+				} else if (msg.type === 'final') {
+					asrFinalText.value = msg.text
+					asrInterimText.value = ''
+					asrLanguage.value = msg.language || ''
+				}
+			} catch (e) {
+				console.error('[ASR] 消息解析失败:', e)
+			}
+		}
+		ws.onerror = (err) => { console.error('[ASR] WebSocket 错误:', err) }
+		ws.onclose = () => { console.log('[ASR] WebSocket 已关闭') }
+		asrWebSocket.value = ws
+		asrLastSentIndex.value = 0
+		asrInterimText.value = ''
+		asrFinalText.value = ''
+		asrLanguage.value = ''
+		// #endif
+	} catch (e) {
+		console.error('[ASR] 连接失败:', e)
+	}
+}
+
+const sendPCMChunk = (float32Chunk) => {
+	const ws = asrWebSocket.value
+	if (!ws || ws.readyState !== WebSocket.OPEN) return
+	if (float32Chunk.length < 1600) return  // < 0.1秒，跳过
+
+	// Float32 [-1,1] -> Int16 [-32768,32767]
+	const int16 = new Int16Array(float32Chunk.length)
+	for (let i = 0; i < float32Chunk.length; i++) {
+		const s = Math.max(-1, Math.min(1, float32Chunk[i]))
+		int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+	}
+	ws.send(int16.buffer)
+}
+
+const closeASR = () => {
+	return new Promise((resolve) => {
+		asrInterimText.value = ''
+		const ws = asrWebSocket.value
+		if (!ws || ws.readyState !== WebSocket.OPEN) {
+			resolve(asrFinalText.value)
+			return
+		}
+		// 监听最终结果后关闭
+		const origHandler = ws.onmessage
+		ws.onmessage = (event) => {
+			try {
+				const msg = JSON.parse(event.data)
+				if (msg.type === 'final') {
+					asrFinalText.value = msg.text
+					asrLanguage.value = msg.language || ''
+					resolve(msg.text || '')
+					return
+				}
+			} catch (e) { /* ignore */ }
+			if (origHandler) origHandler.call(ws, event)
+		}
+		ws.send(JSON.stringify({ type: 'stop' }))
+		// 超时保护：3秒后如果没有收到 final，直接关闭
+		setTimeout(() => {
+			try { ws.close() } catch(e) {}
+			resolve(asrFinalText.value || '')
+		}, 3000)
+		asrWebSocket.value = null
+	})
 }
 
 const getBarColor = (level) => {
@@ -790,4 +930,66 @@ export default {
 	color: rgba(255, 255, 255, 0.4);
 	font-size: 28rpx;
 }
+
+	/* ASR 面板 */
+	.asr-panel {
+		background: linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(15, 52, 96, 0.25));
+		border-radius: 24rpx;
+		padding: 24rpx 32rpx;
+		margin-bottom: 24rpx;
+		border: 1px solid rgba(102, 126, 234, 0.3);
+		box-shadow: 0 8rpx 24rpx rgba(7, 24, 46, 0.2);
+		backdrop-filter: blur(12rpx);
+	}
+	.asr-header {
+		display: flex;
+		align-items: center;
+		gap: 12rpx;
+		margin-bottom: 12rpx;
+	}
+	.asr-label {
+		font-size: 26rpx;
+		color: rgba(255, 255, 255, 0.8);
+		font-weight: 500;
+	}
+	.asr-status-dot {
+		font-size: 18rpx;
+		color: #22c55e;
+		animation: asr-blink 1s ease-in-out infinite;
+	}
+	@keyframes asr-blink {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.3; }
+	}
+	.asr-text-scroll {
+		max-height: 120rpx;
+	}
+	.asr-text {
+		font-size: 28rpx;
+		color: #fff;
+		line-height: 1.6;
+		word-break: break-all;
+	}
+	/* 录音列表中的转录文本 */
+	.record-transcript {
+		display: block;
+		font-size: 24rpx;
+		color: rgba(255, 255, 255, 0.55);
+		margin-top: 8rpx;
+		line-height: 1.5;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 400rpx;
+	}
+	/* ASR 开关行 */
+	.asr-toggle-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-top: 20rpx;
+		padding-top: 24rpx;
+		border-top: 1px solid rgba(255, 255, 255, 0.08);
+	}
+
 </style>
