@@ -16,30 +16,21 @@
 			<text>按住按钮开始录音，松开停止</text>
 		</view>
 
-		<!-- 波形图可视化 -->
+		<!-- 波形图可视化 - 居中生长 + 向右滚动 -->
 		<view class="wave-visualizer" v-if="isRecording">
-			<view class="wave-stack">
-				<view class="wave-bars wave-bars--top">
+			<view class="wave-canvas">
+				<!-- 中心参考线 -->
+				<view class="wave-center-line"></view>
+				<!-- 波形条：从中间同时向上/下生长 -->
+				<view class="wave-bars">
 					<view
 						v-for="(level, index) in waveBars"
-						:key="'top-' + index"
+						:key="'bar-' + index"
 						class="wave-bar"
 						:style="{
 							height: level + '%',
 							backgroundColor: getBarColor(level),
-							animationDelay: index * 0.02 + 's'
-						}"
-					></view>
-				</view>
-				<view class="wave-bars wave-bars--bottom">
-					<view
-						v-for="(level, index) in waveBars"
-						:key="'bottom-' + index"
-						class="wave-bar"
-						:style="{
-							height: level + '%',
-							backgroundColor: getBarColor(level),
-							animationDelay: index * 0.02 + 's'
+							opacity: 0.3 + (index / waveBars.length) * 0.7
 						}"
 					></view>
 				</view>
@@ -188,9 +179,7 @@ const recordDuration = ref(0)
 let recordTimer = null
 
 const powerLevel = ref(0)
-const waveData = ref([])
-const waveBars = ref(new Array(30).fill(5))
-const maxWavePoints = 100
+const waveBars = ref(new Array(50).fill(5))
 const targetPower = ref(0)
 let waveTickTimer = null
 
@@ -199,6 +188,8 @@ const playbackRate = ref(1.0)
 const volume = ref(0.8)
 
 // ASR (Automatic Speech Recognition) 配置
+// 注意：小程序/真机环境中 127.0.0.1 指向手机本地，需使用实际 IP 地址
+// 开发调试时可使用微信开发者工具的"不校验合法域名"选项
 const asrServerUrl = 'ws://127.0.0.1:8765/ws/transcribe'
 const asrEnabled = ref(true)
 const asrWebSocket = ref(null)
@@ -264,8 +255,7 @@ onShow(() => {
 
 const startRecord = () => {
 	if (isRecording.value) return
-	waveData.value = []
-	waveBars.value = new Array(30).fill(5)
+	waveBars.value = new Array(50).fill(5)
 	powerLevel.value = 0
 	targetPower.value = 0
 	const startWithPermission = () => {
@@ -332,8 +322,7 @@ const stopRecord = () => {
 	if (!isRecording.value) return
 	isRecording.value = false
 	powerLevel.value = 0
-	waveData.value = []
-	waveBars.value = new Array(30).fill(5)
+	waveBars.value = new Array(50).fill(5)
 	stopWaveTicker()
 
 	if (recordTimer) {
@@ -366,18 +355,26 @@ const stopRecord = () => {
 			// #endif
 
 			// #ifdef APP || MP-WEIXIN
-			RecordApp.UniSaveLocalFile('recorder.mp3', arrayBuffer, (savePath) => {
-				recordList.value.push({
-					id: Date.now(),
-					src: savePath,
-					time: timeStr,
-					transcript: finalTranscript,
-					transcriptLang: asrLanguage.value || '',
-				})
-				uni.setStorageSync('recordList', recordList.value)
-			}, (errMsg) => {
-				console.error('保存录音失败:', errMsg)
-				uni.showToast({ title: '保存失败', icon: 'none' })
+			const fs = uni.getFileSystemManager()
+			const filePath = `${uni.env.USER_DATA_PATH}/recorder_${Date.now()}.mp3`
+			fs.writeFile({
+				filePath: filePath,
+				data: arrayBuffer,
+				encoding: 'binary',
+				success: () => {
+					recordList.value.push({
+						id: Date.now(),
+						src: filePath,
+						time: timeStr,
+						transcript: finalTranscript,
+						transcriptLang: asrLanguage.value || '',
+					})
+					uni.setStorageSync('recordList', recordList.value)
+				},
+				fail: (err) => {
+					console.error('保存录音失败:', err)
+					uni.showToast({ title: '保存失败', icon: 'none' })
+				}
 			})
 			// #endif
 		})
@@ -390,21 +387,16 @@ const stopRecord = () => {
 const updateWaveData = (power) => {
 	if (!isRecording.value) return
 	powerLevel.value = power
-	waveData.value.push(power)
-	if (waveData.value.length > maxWavePoints) {
-		waveData.value.shift()
-	}
 
-	const barCount = 30
-	const newBars = []
-	for (let i = 0; i < barCount; i++) {
-		const dataIndex = Math.floor((i / barCount) * waveData.value.length)
-		const value = waveData.value[waveData.value.length - 1 - dataIndex] || 0
-		const variation = (Math.random() - 0.5) * 20
-		const barValue = Math.max(5, Math.min(100, value + variation))
-		newBars.push(barValue)
-	}
-	waveBars.value = newBars
+	// 将新数据从左侧推入，右侧挤出（向右滚动效果）
+	const barCount = 50
+	const currentBars = waveBars.value
+	const variation = (Math.random() - 0.5) * 20
+	const newValue = Math.max(5, Math.min(100, power + variation))
+
+	// 左侧插入新值，移除最右侧的值
+	const shifted = [newValue, ...currentBars.slice(0, barCount - 1)]
+	waveBars.value = shifted
 }
 
 const startWaveTicker = () => {
@@ -431,13 +423,19 @@ const stopWaveTicker = () => {
 const connectASR = () => {
 	if (!asrEnabled.value) return
 	try {
-		// #ifdef H5
-		const ws = new WebSocket(asrServerUrl)
-		ws.binaryType = 'arraybuffer'
-		ws.onopen = () => { console.log('[ASR] WebSocket 已连接') }
-		ws.onmessage = (event) => {
+		const ws = uni.connectSocket({
+			url: asrServerUrl,
+			success: () => { console.log('[ASR] WebSocket 连接请求已发送') },
+			fail: (err) => { console.error('[ASR] WebSocket 连接失败:', err) }
+		})
+
+		ws.onOpen(() => {
+			console.log('[ASR] WebSocket 已连接')
+		})
+
+		ws.onMessage((res) => {
 			try {
-				const msg = JSON.parse(event.data)
+				const msg = JSON.parse(res.data)
 				if (msg.type === 'interim') {
 					asrInterimText.value = msg.text
 				} else if (msg.type === 'final') {
@@ -448,15 +446,16 @@ const connectASR = () => {
 			} catch (e) {
 				console.error('[ASR] 消息解析失败:', e)
 			}
-		}
-		ws.onerror = (err) => { console.error('[ASR] WebSocket 错误:', err) }
-		ws.onclose = () => { console.log('[ASR] WebSocket 已关闭') }
+		})
+
+		ws.onError((err) => { console.error('[ASR] WebSocket 错误:', err) })
+		ws.onClose(() => { console.log('[ASR] WebSocket 已关闭') })
+
 		asrWebSocket.value = ws
 		asrLastSentIndex.value = 0
 		asrInterimText.value = ''
 		asrFinalText.value = ''
 		asrLanguage.value = ''
-		// #endif
 	} catch (e) {
 		console.error('[ASR] 连接失败:', e)
 	}
@@ -464,7 +463,7 @@ const connectASR = () => {
 
 const sendPCMChunk = (float32Chunk) => {
 	const ws = asrWebSocket.value
-	if (!ws || ws.readyState !== WebSocket.OPEN) return
+	if (!ws) return
 	if (float32Chunk.length < 1600) return  // < 0.1秒，跳过
 
 	// Float32 [-1,1] -> Int16 [-32768,32767]
@@ -473,32 +472,18 @@ const sendPCMChunk = (float32Chunk) => {
 		const s = Math.max(-1, Math.min(1, float32Chunk[i]))
 		int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
 	}
-	ws.send(int16.buffer)
+	ws.send({ data: int16.buffer })
 }
 
 const closeASR = () => {
 	return new Promise((resolve) => {
 		asrInterimText.value = ''
 		const ws = asrWebSocket.value
-		if (!ws || ws.readyState !== WebSocket.OPEN) {
+		if (!ws) {
 			resolve(asrFinalText.value)
 			return
 		}
-		// 监听最终结果后关闭
-		const origHandler = ws.onmessage
-		ws.onmessage = (event) => {
-			try {
-				const msg = JSON.parse(event.data)
-				if (msg.type === 'final') {
-					asrFinalText.value = msg.text
-					asrLanguage.value = msg.language || ''
-					resolve(msg.text || '')
-					return
-				}
-			} catch (e) { /* ignore */ }
-			if (origHandler) origHandler.call(ws, event)
-		}
-		ws.send(JSON.stringify({ type: 'stop' }))
+		ws.send({ data: JSON.stringify({ type: 'stop' }) })
 		// 超时保护：3秒后如果没有收到 final，直接关闭
 		setTimeout(() => {
 			try { ws.close() } catch(e) {}
@@ -688,37 +673,45 @@ export default {
 	pointer-events: none;
 }
 
-
-.wave-stack {
-	display: flex;
-	flex-direction: column;
-	gap: 8rpx;
+.wave-canvas {
+	position: relative;
 	width: 100%;
-	padding: 6rpx 0 2rpx;
+	height: 200rpx;
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	z-index: 1;
+}
+
+.wave-center-line {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 50%;
+	height: 2rpx;
+	background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
+	transform: translateY(-50%);
+	pointer-events: none;
 }
 
 .wave-bars {
 	display: flex;
-	align-items: flex-end;
-	justify-content: center;
+	align-items: center;
+	justify-content: flex-start;
 	gap: 6rpx;
-	height: 72rpx;
+	height: 100%;
 	width: 100%;
-}
-
-.wave-bars--top {
-	transform: scaleY(-1);
+	padding: 0 4rpx;
 }
 
 .wave-bar {
-	width: 12rpx;
-	border-radius: 6rpx;
-	transition: height 0.1s ease;
-	min-height: 8rpx;
-	box-shadow: 0 0 16rpx rgba(102, 126, 234, 0.45);
+	width: 10rpx;
+	border-radius: 5rpx;
+	transition: height 0.08s ease, opacity 0.15s ease;
+	min-height: 6rpx;
+	flex-shrink: 0;
+	box-shadow: 0 0 12rpx rgba(102, 126, 234, 0.4);
 	filter: saturate(1.2);
-	animation: bar-glow 1.6s ease-in-out infinite;
 }
 
 .wave-info {
@@ -867,20 +860,6 @@ export default {
 	box-shadow: 0 12rpx 28rpx rgba(102, 126, 234, 0.25);
 }
 
-@keyframes bar-glow {
-	0% {
-		box-shadow: 0 0 10rpx rgba(102, 126, 234, 0.35);
-		transform: translateY(0);
-	}
-	50% {
-		box-shadow: 0 0 22rpx rgba(240, 147, 251, 0.45);
-		transform: translateY(-2rpx);
-	}
-	100% {
-		box-shadow: 0 0 10rpx rgba(102, 126, 234, 0.35);
-		transform: translateY(0);
-	}
-}
 
 .record-info {
 	flex: 1;
