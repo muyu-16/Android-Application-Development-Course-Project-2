@@ -116,6 +116,20 @@
 						color="#667eea"
 					/>
 				</view>
+				<view class="control-row asr-lang-row" v-if="asrEnabled">
+					<text class="control-label">识别语言</text>
+					<view class="lang-options">
+						<view
+							v-for="lang in asrLangOptions"
+							:key="lang.value"
+							class="lang-chip"
+							:class="{ active: asrLanguage === lang.value }"
+							@tap="asrLanguage = lang.value"
+						>
+							<text>{{ lang.label }}</text>
+						</view>
+					</view>
+				</view>
 
 			</view>
 		<!-- 录音列表 -->
@@ -130,7 +144,11 @@
 					
 				>
 					<view class="record-info" @tap="playRecord(index)">
-						<text class="record-name">{{ item.fullTime || item.time }}</text>
+						<view class="record-name-row">
+							<text class="record-name">{{ item.fullTime || item.time }}</text>
+							<text v-if="item.transcriptLang" class="record-lang-tag">{{ item.transcriptLang }}</text>
+						</view>
+						<text v-if="item.duration" class="record-duration">时长 {{ item.duration }}</text>
 						<text v-if="item.transcript" class="record-transcript">{{ item.transcript }}</text>
 					</view>
 					<view class="record-actions">
@@ -170,6 +188,9 @@ import 'recorder-core/src/engine/mp3'
 import 'recorder-core/src/engine/mp3-engine'
 // #endif
 
+// 引入阿里云语音识别插件
+import 'recorder-core/src/extensions/asr.aliyun.short.js'
+
 const audio = uni.createInnerAudioContext()
 
 const isRecording = ref(false)
@@ -188,15 +209,21 @@ const playbackRate = ref(1.0)
 const volume = ref(0.8)
 
 // ASR (Automatic Speech Recognition) 配置
-// 注意：小程序/真机环境中 127.0.0.1 指向手机本地，需使用实际 IP 地址
-// 开发调试时可使用微信开发者工具的"不校验合法域名"选项
-const asrServerUrl = 'ws://127.0.0.1:8765/ws/transcribe'
+// 阿里云语音识别配置
+const asrTokenApi = 'http://192.168.1.14:9527/token'  // Token 生成接口
 const asrEnabled = ref(true)
-const asrWebSocket = ref(null)
 const asrInterimText = ref('')
 const asrFinalText = ref('')
-const asrLastSentIndex = ref(0)
-const asrLanguage = ref('')
+const asrLanguage = ref('普通话')
+const asrLangOptions = [
+	{ label: '普通话', value: '普通话' },
+	{ label: '粤语', value: '粤语' },
+	{ label: '英语', value: '英语' },
+	{ label: '日语', value: '日语' }
+]
+
+// ASR 实例
+let asrInstance = null
 
 const userName = '刘子云'
 const pageInstance = getCurrentInstance()?.proxy || null
@@ -263,20 +290,13 @@ const startRecord = () => {
 			type: 'mp3',
 			sampleRate: 16000,
 			bitRate: 16,
-			onProcess: (_buffers, level, duration) => {
+			onProcess: (_buffers, level, duration, bufferSampleRate, newBufferIdx) => {
 				if (!isRecording.value) return
 				targetPower.value = level
 
-				// ASR 流式发送：将 PCM Float32 转换为 Int16 发送
-				if (asrEnabled.value && asrWebSocket.value && _buffers && _buffers.length > 0) {
-					// _buffers[0] 是累积的 Float32Array PCM 数据
-					const totalSamples = _buffers[0].length
-					const lastSent = asrLastSentIndex.value
-					if (totalSamples > lastSent) {
-						const newChunk = _buffers[0].slice(lastSent, totalSamples)
-						sendPCMChunk(newChunk)
-						asrLastSentIndex.value = totalSamples
-					}
+				// ASR 流式发送：将音频数据输入到阿里云 ASR
+				if (asrEnabled.value && asrInstance && _buffers && _buffers.length > 0) {
+					asrInstance.input(_buffers, bufferSampleRate, newBufferIdx)
 				}
 			}
 		}
@@ -287,7 +307,7 @@ const startRecord = () => {
 			recordDuration.value = 0
 			startDurationTimer()
 			startWaveTicker()
-			// 连接 ASR WebSocket
+			// 连接 ASR
 			connectASR()
 		}, (msg) => {
 			console.error('开始录音失败:', msg)
@@ -336,6 +356,8 @@ const stopRecord = () => {
 	RecordApp.Stop((arrayBuffer, duration, mime) => {
 		const now = new Date()
 		const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
+		const fullTimeStr = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${timeStr}`
+		const durationStr = formatTime(recordDuration.value)
 
 		// 等待 ASR 结果
 		asrPromise.then((transcript) => {
@@ -347,9 +369,11 @@ const stopRecord = () => {
 			recordList.value.push({
 				id: Date.now(),
 				src: url,
+				fullTime: fullTimeStr,
 				time: timeStr,
+				duration: durationStr,
 				transcript: finalTranscript,
-				transcriptLang: asrLanguage.value || '',
+				transcriptLang: finalTranscript ? (asrLanguage.value || '普通话') : '',
 			})
 			uni.setStorageSync('recordList', recordList.value)
 			// #endif
@@ -365,9 +389,11 @@ const stopRecord = () => {
 					recordList.value.push({
 						id: Date.now(),
 						src: filePath,
+						fullTime: fullTimeStr,
 						time: timeStr,
+						duration: durationStr,
 						transcript: finalTranscript,
-						transcriptLang: asrLanguage.value || '',
+						transcriptLang: finalTranscript ? (asrLanguage.value || '普通话') : '',
 					})
 					uni.setStorageSync('recordList', recordList.value)
 				},
@@ -418,78 +444,147 @@ const stopWaveTicker = () => {
 	}
 }
 
-// ===================== ASR WebSocket 流式识别 =====================
+// ===================== ASR 阿里云语音识别 =====================
+
+/** 实现 apiRequest 接口，tokenApi 的请求实现方法 **/
+var uni_ApiRequest = function(url, args, success, fail) {
+	// 请求 url 获得 token 数据，然后通过 success 返回结果
+	uni.request({
+		url: url, data: args, method: 'POST', dataType: 'text',
+		header: { 'content-type': 'application/x-www-form-urlencoded' },
+		success: (e) => {
+			if (e.statusCode != 200) {
+				fail('请求出错[' + e.statusCode + ']')
+				return
+			}
+			try {
+				var data = JSON.parse(e.data)
+			} catch (e) {
+				fail('请求结果不是json格式')
+				return
+			}
+			// 根据接口格式提取数据并回调
+			if (data.c !== 0) {
+				fail('接口调用错误：' + data.m)
+				return
+			}
+			data = data.v
+			success({ appkey: data.appkey, token: data.token })
+		},
+		fail: (e) => {
+			fail(e.errMsg || '请求出错')
+		}
+	})
+}
+
+/** 实现 compatibleWebSocket 接口 **/
+var uni_WebSocket = function(url) {
+	var ws = {
+		onopen: () => {},
+		onerror: (event) => {},
+		onclose: (event) => {},
+		onmessage: (event) => {}
+	}
+	var store = ws.storeData = {}
+
+	ws.send = (data) => {
+		store.wsTask.send({ data: data })
+	}
+	ws.connect = () => {
+		var wsTask = store.wsTask = uni.connectSocket({
+			url: url,
+			success: () => { },
+			fail: (res) => {
+				if (store.isError) return; store.isError = 1
+				ws.onerror({ message: '创建连接出现错误：' + res.errMsg })
+			}
+		})
+		wsTask.onOpen(() => {
+			if (store.isOpen) return; store.isOpen = 1
+			ws.onopen()
+		})
+		wsTask.onClose((e) => {
+			if (store.isClose) return; store.isClose = 1
+			ws.onclose({ code: e.code || -1, reason: e.reason || '' })
+		})
+		wsTask.onError((e) => {
+			if (store.isError) return; store.isError = 1
+			ws.onerror({ message: e.errMsg || '未知错误' })
+		})
+		wsTask.onMessage((e) => { ws.onmessage({ data: e.data }) })
+	}
+	ws.close = (code, reason) => {
+		var obj = {}
+		if (code != null) obj.code = code
+		if (reason != null) obj.reason = reason
+		store.wsTask.close(obj)
+	}
+	return ws
+}
 
 const connectASR = () => {
 	if (!asrEnabled.value) return
 	try {
-		const ws = uni.connectSocket({
-			url: asrServerUrl,
-			success: () => { console.log('[ASR] WebSocket 连接请求已发送') },
-			fail: (err) => { console.error('[ASR] WebSocket 连接失败:', err) }
-		})
+		console.log('[ASR] 正在启动阿里云语音识别...')
 
-		ws.onOpen(() => {
-			console.log('[ASR] WebSocket 已连接')
-		})
-
-		ws.onMessage((res) => {
-			try {
-				const msg = JSON.parse(res.data)
-				if (msg.type === 'interim') {
-					asrInterimText.value = msg.text
-				} else if (msg.type === 'final') {
-					asrFinalText.value = msg.text
-					asrInterimText.value = ''
-					asrLanguage.value = msg.language || ''
+		// 创建语音识别对象
+		asrInstance = Recorder.ASR_Aliyun_Short({
+			tokenApi: asrTokenApi,
+			apiArgs: {
+				lang: asrLanguage.value
+			},
+			apiRequest: uni_ApiRequest,
+			compatibleWebSocket: uni_WebSocket,
+			asrProcess: (text, nextDuration, abortMsg) => {
+				if (abortMsg) {
+					console.error('[ASR] 识别被终止：', abortMsg)
+					return false
 				}
-			} catch (e) {
-				console.error('[ASR] 消息解析失败:', e)
+				asrInterimText.value = text
+				// 限制识别时长不超过 2 分钟
+				return nextDuration <= 2 * 60 * 1000
+			},
+			log: (msg, color) => {
+				console.log('[ASR]', msg)
 			}
 		})
 
-		ws.onError((err) => { console.error('[ASR] WebSocket 错误:', err) })
-		ws.onClose(() => { console.log('[ASR] WebSocket 已关闭') })
-
-		asrWebSocket.value = ws
-		asrLastSentIndex.value = 0
-		asrInterimText.value = ''
-		asrFinalText.value = ''
-		asrLanguage.value = ''
+		// 打开语音识别
+		asrInstance.start(() => {
+			console.log('[ASR] 阿里云语音识别已启动')
+			asrInterimText.value = ''
+			asrFinalText.value = ''
+		}, (errMsg) => {
+			console.error('[ASR] 语音识别启动失败：', errMsg)
+			uni.showToast({ title: 'ASR启动失败', icon: 'none' })
+		})
 	} catch (e) {
 		console.error('[ASR] 连接失败:', e)
 	}
 }
 
-const sendPCMChunk = (float32Chunk) => {
-	const ws = asrWebSocket.value
-	if (!ws) return
-	if (float32Chunk.length < 1600) return  // < 0.1秒，跳过
-
-	// Float32 [-1,1] -> Int16 [-32768,32767]
-	const int16 = new Int16Array(float32Chunk.length)
-	for (let i = 0; i < float32Chunk.length; i++) {
-		const s = Math.max(-1, Math.min(1, float32Chunk[i]))
-		int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
-	}
-	ws.send({ data: int16.buffer })
-}
-
 const closeASR = () => {
 	return new Promise((resolve) => {
 		asrInterimText.value = ''
-		const ws = asrWebSocket.value
-		if (!ws) {
-			resolve(asrFinalText.value)
+
+		if (!asrInstance) {
+			resolve(asrFinalText.value || '')
 			return
 		}
-		ws.send({ data: JSON.stringify({ type: 'stop' }) })
-		// 超时保护：3秒后如果没有收到 final，直接关闭
-		setTimeout(() => {
-			try { ws.close() } catch(e) {}
+
+		var asr2 = asrInstance
+		asrInstance = null
+
+		asr2.stop((text, abortMsg) => {
+			if (abortMsg) {
+				console.log('[ASR] 识别中途被终止：', abortMsg)
+			}
+			asrFinalText.value = text
+			resolve(text || '')
+		}, (errMsg) => {
+			console.error('[ASR] 识别结束失败：', errMsg)
 			resolve(asrFinalText.value || '')
-		}, 3000)
-		asrWebSocket.value = null
+		})
 	})
 }
 
@@ -949,17 +1044,38 @@ export default {
 		line-height: 1.6;
 		word-break: break-all;
 	}
+	/* 录音列表头部和标签 */
+	.record-name-row {
+		display: flex;
+		align-items: center;
+		gap: 12rpx;
+	}
+	.record-lang-tag {
+		font-size: 20rpx;
+		color: #667eea;
+		background: rgba(102, 126, 234, 0.2);
+		padding: 2rpx 12rpx;
+		border-radius: 6rpx;
+		flex-shrink: 0;
+	}
+	.record-duration {
+		display: block;
+		font-size: 22rpx;
+		color: rgba(255, 255, 255, 0.35);
+		margin-top: 6rpx;
+	}
 	/* 录音列表中的转录文本 */
 	.record-transcript {
-		display: block;
+		display: -webkit-box;
 		font-size: 24rpx;
 		color: rgba(255, 255, 255, 0.55);
 		margin-top: 8rpx;
 		line-height: 1.5;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
-		max-width: 400rpx;
+		-webkit-line-clamp: 2;
+		-webkit-box-orient: vertical;
+		word-break: break-all;
 	}
 	/* ASR 开关行 */
 	.asr-toggle-row {
@@ -971,4 +1087,32 @@ export default {
 		border-top: 1px solid rgba(255, 255, 255, 0.08);
 	}
 
+
+		/* ASR 语言选择 */
+		.asr-lang-row {
+			margin-top: 20rpx;
+			padding-top: 24rpx;
+			border-top: 1px solid rgba(255, 255, 255, 0.08);
+		}
+		.lang-options {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 16rpx;
+			margin-top: 12rpx;
+		}
+		.lang-chip {
+			padding: 10rpx 28rpx;
+			border-radius: 999rpx;
+			background: rgba(255, 255, 255, 0.08);
+			border: 1px solid rgba(255, 255, 255, 0.15);
+			font-size: 26rpx;
+			color: rgba(255, 255, 255, 0.7);
+			transition: all 0.2s ease;
+		}
+		.lang-chip.active {
+			background: rgba(102, 126, 234, 0.35);
+			border-color: #667eea;
+			color: #fff;
+			font-weight: 500;
+		}
 </style>
