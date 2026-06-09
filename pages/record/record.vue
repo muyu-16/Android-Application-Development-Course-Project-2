@@ -241,8 +241,11 @@ onMounted(() => {
 	if (savedList) {
 		recordList.value = savedList
 	}
-	
+
 	console.log(`【${userName}】页面加载 - 当前recordList长度: ${recordList.value.length}`)
+
+	// 加载云端录音列表
+	loadFromCloud()
 
 	// #ifdef APP
 	if (pageInstance) {
@@ -376,9 +379,34 @@ const stopRecord = () => {
 				transcriptLang: finalTranscript ? (asrLanguage.value || '普通话') : '',
 			})
 			uni.setStorageSync('recordList', recordList.value)
+			uploadToCloud(blob, recordDuration.value, mime)
 			// #endif
 
-			// #ifdef APP || MP-WEIXIN
+			// #ifdef MP-WEIXIN
+			RecordApp.MiniProgramWx_WriteLocalFile(
+				'recorder_' + Date.now() + '.wav',
+				arrayBuffer,
+				function(localFilePath) {
+					recordList.value.push({
+						id: Date.now(),
+						src: localFilePath,
+						fullTime: fullTimeStr,
+						time: timeStr,
+						duration: durationStr,
+						transcript: finalTranscript,
+						transcriptLang: finalTranscript ? (asrLanguage.value || '普通话') : '',
+					})
+					uni.setStorageSync('recordList', recordList.value)
+					uploadToCloud(localFilePath, recordDuration.value)
+				},
+				function(err) {
+					console.error('本地保存失败:', err)
+					uni.showToast({ title: '保存失败', icon: 'none' })
+				}
+			)
+			// #endif
+
+			// #ifdef APP
 			const fs = uni.getFileSystemManager()
 			const filePath = `${uni.env.USER_DATA_PATH}/recorder_${Date.now()}.mp3`
 			fs.writeFile({
@@ -396,6 +424,7 @@ const stopRecord = () => {
 						transcriptLang: finalTranscript ? (asrLanguage.value || '普通话') : '',
 					})
 					uni.setStorageSync('recordList', recordList.value)
+					uploadToCloud(filePath, recordDuration.value)
 				},
 				fail: (err) => {
 					console.error('保存录音失败:', err)
@@ -622,13 +651,150 @@ const deleteRecord = (index) => {
 				}
 				recordList.value.splice(index, 1)
 				uni.setStorageSync('recordList', recordList.value)
-				
+
 				if (currentPlayingIndex.value > index) {
 					currentPlayingIndex.value--
 				}
 			}
 		}
 	})
+}
+
+// ===================== 云端上传 / 读取 =====================
+
+// 微信小程序：读本地文件 → ArrayBuffer → base64
+const readFileAsBase64 = (filePath) => {
+	return new Promise((resolve, reject) => {
+		uni.getFileSystemManager().readFile({
+			filePath: filePath,
+			success: (res) => {
+				try {
+					const base64 = uni.arrayBufferToBase64(res.data)
+					resolve(base64)
+				} catch (e) {
+					reject(e)
+				}
+			},
+			fail: (err) => reject(err)
+		})
+	})
+}
+
+// 上传录音到云端，返回云端 fileID
+const uploadToCloud = async (localFilePath, durationSec, mime = 'audio/mpeg') => {
+	try {
+		uni.showLoading({ title: '上传中...', mask: true })
+
+		let fileID = ''
+
+		// #ifdef MP-WEIXIN
+		// 微信小程序：wx.cloud.uploadFile 不接受 USER_DATA_PATH 里的文件，
+		// 所以走云函数：本地读 buffer → base64 → 云端写存储 + 写库
+		const base64 = await readFileAsBase64(localFilePath)
+		const cloudRes = await uniCloud.callFunction({
+			name: 'uploadRecording',
+			data: {
+				base64: base64,
+				cloudPath: `recordings/recording_${Date.now()}.mp3`,
+				duration: durationSec,
+				nickname: uni.getStorageSync('myNickname') || '匿名同学',
+				deviceId: uni.getSystemInfoSync().deviceId
+			}
+		})
+		if (!cloudRes.result || !cloudRes.result.success) {
+			throw new Error(cloudRes.result?.error || '云函数返回失败')
+		}
+		fileID = cloudRes.result.fileID
+		// #endif
+
+		// #ifndef MP-WEIXIN
+		// H5 / APP：把 Blob 包成 File，其它情况直接传路径
+		let uploadFile = localFilePath
+		if (typeof Blob !== 'undefined' && localFilePath instanceof Blob && !(localFilePath instanceof File)) {
+			uploadFile = new File([localFilePath], `recording_${Date.now()}.mp3`, { type: mime })
+		}
+
+		const uploadResult = await uniCloud.uploadFile({
+			filePath: uploadFile,
+			cloudPath: `recordings/recording_${Date.now()}.mp3`,
+			onUploadProgress: (e) => {
+				console.log(`上传进度: ${e.progress}%`)
+			}
+		})
+		fileID = uploadResult.fileID
+
+		// 将元数据存入云数据库
+		const db = uniCloud.database()
+		await db.collection('recordings').add({
+			fileID: fileID,
+			duration: durationSec,
+			createTime: Date.now(),
+			nickname: uni.getStorageSync('myNickname') || '匿名同学',
+			deviceId: uni.getSystemInfoSync().deviceId
+		})
+		// #endif
+
+		console.log('上传成功，云端地址：', fileID)
+		uni.hideLoading()
+		uni.showToast({ title: '已保存到云端', icon: 'success' })
+
+		return fileID
+	} catch (e) {
+		uni.hideLoading()
+		console.error('上传失败：', e)
+		uni.showToast({ title: '上传失败，已保存本地', icon: 'none' })
+		return localFilePath
+	}
+}
+
+const formatTimestamp = (ts) => {
+	const d = new Date(ts)
+	const m = String(d.getMonth() + 1).padStart(2, '0')
+	const day = String(d.getDate()).padStart(2, '0')
+	const hh = String(d.getHours()).padStart(2, '0')
+	const mm = String(d.getMinutes()).padStart(2, '0')
+	const ss = String(d.getSeconds()).padStart(2, '0')
+	return {
+		fullTime: `${m}-${day} ${hh}:${mm}:${ss}`,
+		time: `${hh}:${mm}:${ss}`
+	}
+}
+
+// 从云数据库读取录音列表（可以看到所有人的录音）
+const loadFromCloud = async () => {
+	try {
+		const db = uniCloud.database()
+		const result = await db.collection('recordings')
+			.orderBy('createTime', 'desc')
+			.limit(50)
+			.get()
+
+		const cloudList = (result.result.data || []).map((item) => {
+			const t = formatTimestamp(item.createTime || Date.now())
+			return {
+				id: 'cloud_' + (item._id || item.fileID),
+				src: item.fileID,
+				fullTime: t.fullTime,
+				time: t.time,
+				duration: formatTime(item.duration || 0),
+				transcript: '',
+				transcriptLang: '',
+				nickname: item.nickname || '匿名',
+				fromCloud: true
+			}
+		})
+
+		// 合并：云端记录追加到本地列表之后（按 id 去重）
+		const existingIds = new Set(recordList.value.map((r) => r.id))
+		const newOnes = cloudList.filter((r) => !existingIds.has(r.id))
+		if (newOnes.length) {
+			recordList.value = [...recordList.value, ...newOnes]
+			uni.setStorageSync('recordList', recordList.value)
+		}
+		console.log('云端录音加载完成，新增', newOnes.length, '条')
+	} catch (e) {
+		console.error('读取云端失败:', e)
+	}
 }
 
 const onPlaybackRateChange = (e) => {

@@ -1,0 +1,1 @@
+{"bsonType":"object","permission":{"read":true,"create":true,"update":true,"delete":true},"properties":{"fileID":{"bsonType":"string"},"duration":{"bsonType":"number"},"createTime":{"bsonType":"number"},"nickname":{"bsonType":"string"},"deviceId":{"bsonType":"string"}}}

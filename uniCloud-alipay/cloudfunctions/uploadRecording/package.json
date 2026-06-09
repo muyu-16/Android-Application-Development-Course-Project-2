@@ -1,0 +1,16 @@
+{
+	"name": "uploadRecording",
+	"version": "1.0.0",
+	"description": "上传录音到云存储并写入 recordings 集合",
+	"main": "index.js",
+	"dependencies": {},
+	"extensions": {
+		"uni-cloud-jql": {}
+	},
+	"cloudfunction-config": {
+		"concurrency": 10,
+		"memorySize": 256,
+		"timeout": 10,
+		"triggers": []
+	}
+}
