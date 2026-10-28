@@ -1,0 +1,22 @@
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'com.audioprocessor'
+    compileSdkVersion 33
+
+    defaultConfig {
+        minSdkVersion 21
+        targetSdkVersion 33
+        versionCode 1
+        versionName "1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    implementation 'io.dcloud:uniapp-v8:+'
+}

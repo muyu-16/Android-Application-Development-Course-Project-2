@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.audioprocessor">
+
+    <!-- 录音权限 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+    <application>
+        <activity
+            android:name=".MainActivity"
+            android:label="@string/app_name">
+        </activity>
+
+        <!-- 注册原生模块 -->
+        <meta-data
+            android:name="nativePlugins"
+            android:value="com.audioprocessor.AudioAnalyzerModuleConfig"/>
+    </application>
+
+</manifest>

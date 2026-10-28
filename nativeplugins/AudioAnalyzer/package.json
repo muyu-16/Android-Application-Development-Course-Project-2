@@ -1,0 +1,8 @@
+{
+  "name": "AudioAnalyzer",
+  "version": "1.0.0",
+  "description": "Android音频频谱分析原生模块",
+  "platforms": ["Android"],
+  "dependencies": {},
+  "main": "index.js"
+}
